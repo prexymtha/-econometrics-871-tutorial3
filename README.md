@@ -1,0 +1,489 @@
+---
+title: "Econometrics 871 – Tutorial 3"
+subtitle: "Consequences of Non-Stationarity and Unit Root Testing"
+author: "Willem Boshoff (compiled by R. van Jaarsveld & L. McLean; updated C.F. Kreuser, 2025; new version by Precious Nhamo, 2026)"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+    toc: true
+---
+
+
+
+```{r setup, include=FALSE}
+# Global chunk options
+knitr::opts_chunk$set(
+    echo    = TRUE,
+    warning = FALSE,
+    message = FALSE,
+    fig.align = "center",
+    comment = "##"
+)
+```
+
+# Setting Up {.tabset}
+
+## Load Environment
+
+We source `main.R`, which handles:
+
+- Clearing the workspace
+- Installing / loading all packages via **pacman**
+- Sourcing every helper function from the `code/` directory
+- Reading the two datasets from `data/` directory :  (`ukm1q.txt` and `fulton.txt`)
+- Creating `ts` and `xts` objects
+
+```{r source-main}
+source("main.R")
+```
+
+## Project Structure
+
+```
+tutorial3_project/
+├── main.R                       # Master setup R script
+├── Tutorial_3.Rmd               # This R Markdown document
+└── code/
+    ├── ukm1q.txt                # UK macroeconomic data
+    ├── fulton.txt               # Fulton fish market data
+└── code/
+    ├── fit_actual.R             # Overlay actual vs. fitted
+    ├── z_resids.R               # Standardised-residual plot
+    ├── compute_alpha.R          # Sample autocorrelation
+    ├── compute_partial_alpha.R  # Partial autocorrelation (OLS)
+    ├── run_diagnostics.R        # Misspecification test battery
+    └── plot_diagnostics.R       # 2×2 diagnostic panel
+```
+
+
+# Replicating HN Chapter 16.1 – Visual Inspection
+
+## Time-Series Plots (Figure 16.1)
+
+We plot three key series from the UK M1 dataset:
+
+- **(b) Total expenditure** ($x_{85a,t}$): log real total expenditure at 1985 prices.
+  Exhibits a clear upward trend — characteristic of a *trending non-stationary* process.
+- **(c) Prices** ($p_{a,t}$): log GDP deflator.
+  Also exhibits persistent dynamics (slow mean-reversion).
+- **(d) Growth in total expenditure** ($\Delta x_{85a,t} = x_{85a,t} - x_{85a,t-1}$):
+  The first difference appears *stationary* — fluctuating around a constant mean.
+
+```{r fig-16-1, fig.height=10}
+p1 <- autoplot(x85a) +
+    ggtitle("(b) Total expenditure") +
+    ylab("") + xlab("") +
+    theme_minimal()
+
+p2 <- autoplot(pa) +
+    ggtitle("(c) Prices") +
+    ylab("") + xlab("") +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
+    theme_minimal()
+
+p3 <- autoplot(dx85a) +
+    ggtitle("(d) Growth in total expenditure") +
+    ylab("") + xlab("") +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
+    theme_minimal()
+
+grid.arrange(p1, p2, p3, ncol = 1)
+```
+
+**Interpretation:** The levels series ($x_{85a}$ and $p_a$) trend upward, suggesting
+non-stationarity. The differenced series $\Delta x_{85a}$ fluctuates around zero with
+roughly constant variance — consistent with stationarity (see HN p. 240–241).
+
+
+## Correlograms and Partial Correlograms (Figure 16.2)
+
+### Theory
+
+The **autocorrelation function (ACF)** at lag $s$ is:
+
+$$
+\hat{\alpha}(s) = \frac{\text{Cov}(y_t,\; y_{t-s})}{\text{SD}(y_t)\;\text{SD}(y_{t-s})}
+$$
+
+For a stationary process this simplifies to
+$\rho(s) = \gamma(s) / \gamma(0)$, where $\gamma(s) = \text{Cov}(y_t, y_{t-s})$.
+
+The **partial autocorrelation function (PACF)** at lag $s$ is the coefficient
+$\hat{\phi}_s$ from the OLS regression:
+
+$$
+y_t = \phi_1 y_{t-1} + \phi_2 y_{t-2} + \cdots + \phi_s y_{t-s} + u_t
+$$
+
+It isolates the *direct* linear dependence between $y_t$ and $y_{t-s}$, removing
+the influence of intervening lags.
+
+**Key diagnostic:**
+
+- A *slowly decaying* ACF + a PACF that cuts off after lag 1 is the signature
+  of a unit-root (or near-unit-root) process.
+
+### Computation
+
+```{r correlograms, fig.height=9, fig.width=11}
+max_lag <- 20
+lags    <- 0:max_lag
+
+# ---------- Autocorrelation (custom vs. built-in) ----------
+
+# Custom correlogram (our compute_alpha function)
+alpha_total <- sapply(lags, function(s) compute_alpha(x85a, s))
+alpha_defl  <- sapply(lags, function(s) compute_alpha(pa, s))
+
+# Built-in ACF for comparison
+acf_total <- acf(x85a, plot = FALSE, type = "cor", lag.max = max_lag)$acf[1:(max_lag + 1)]
+acf_defl  <- acf(pa,   plot = FALSE, type = "cor", lag.max = max_lag)$acf[1:(max_lag + 1)]
+
+# ---------- Partial autocorrelation (custom vs. built-in) ----------
+
+partial_total_custom  <- sapply(lags, function(s) compute_partial_alpha(x85a, s))
+partial_total_builtin <- c(1, acf(x85a, plot = FALSE, type = "partial",
+                                   lag.max = max_lag)$acf[1:max_lag])
+
+partial_defl_custom  <- sapply(lags, function(s) compute_partial_alpha(pa, s))
+partial_defl_builtin <- c(1, acf(pa, plot = FALSE, type = "partial",
+                                  lag.max = max_lag)$acf[1:max_lag])
+
+# ---------- Reshape to long format for ggplot ----------
+
+df_total_alpha <- melt(
+    data.frame(Lag = lags, Correlogram = alpha_total, Covariogram = acf_total),
+    id.vars = "Lag", variable.name = "Measure", value.name = "Value"
+)
+
+df_defl_alpha <- melt(
+    data.frame(Lag = lags, Correlogram = alpha_defl, Covariogram = acf_defl),
+    id.vars = "Lag", variable.name = "Measure", value.name = "Value"
+)
+
+df_total_partial <- melt(
+    data.frame(Lag = lags, Partial_Cor = partial_total_custom,
+               Partial_Cov = partial_total_builtin),
+    id.vars = "Lag", variable.name = "Measure", value.name = "Value"
+)
+
+df_defl_partial <- melt(
+    data.frame(Lag = lags, Partial_Cor = partial_defl_custom,
+               Partial_Cov = partial_defl_builtin),
+    id.vars = "Lag", variable.name = "Measure", value.name = "Value"
+)
+
+# ---------- Colour palette ----------
+pal <- viridis(3, option = "plasma")
+
+# ---------- Build plots ----------
+p1 <- ggplot(df_total_alpha, aes(Lag, Value, colour = Measure, group = Measure)) +
+    geom_line(linewidth = 0.8) + geom_point(size = 1.5) +
+    labs(title = "(a) Expenditure Correlogram / Covariogram", y = "Value") +
+    scale_colour_manual(values = pal[1:2]) +
+    scale_y_continuous(limits = c(-0.1, 1)) +
+    theme_minimal() + theme(legend.position = "top")
+
+p2 <- ggplot(df_defl_alpha, aes(Lag, Value, colour = Measure, group = Measure)) +
+    geom_line(linewidth = 0.8) + geom_point(size = 1.5) +
+    labs(title = "(b) Deflator Correlogram / Covariogram", y = "Value") +
+    scale_colour_manual(values = pal[1:2]) +
+    scale_y_continuous(limits = c(-0.1, 1)) +
+    theme_minimal() + theme(legend.position = "top")
+
+p3 <- ggplot(df_total_partial, aes(Lag, Value, colour = Measure, group = Measure)) +
+    geom_line(linewidth = 0.8) + geom_point(size = 1.5) +
+    labs(title = "(c) Expenditure Partial Correlogram", y = "PACF") +
+    scale_colour_manual(values = pal[1:2]) +
+    theme_minimal() + theme(legend.position = "top")
+
+p4 <- ggplot(df_defl_partial, aes(Lag, Value, colour = Measure, group = Measure)) +
+    geom_line(linewidth = 0.8) + geom_point(size = 1.5) +
+    labs(title = "(d) Deflator Partial Correlogram", y = "PACF") +
+    scale_colour_manual(values = pal[1:2]) +
+    theme_minimal() + theme(legend.position = "top")
+
+grid.arrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+```
+
+**Interpretation:** Both expenditure and the deflator show ACFs that decay *very*
+slowly — consistent with unit-root behaviour. The PACFs spike at lag 1 and then
+drop, which is the textbook pattern for an AR(1) process with $\phi \approx 1$.
+
+
+# Consequences of Non-Stationarity (HN §16.3)
+
+## Model 1: AR(1) with Trend (Table 16.1)
+
+We estimate an AR(1) model with a deterministic time trend:
+
+$$
+x_{85a,t} = \beta_0 + \beta_1\, x_{85a,t-1} + \beta_2\, t + \varepsilon_t
+$$
+
+where $t$ is a linear trend index.
+
+```{r model-1}
+m1 <- dynlm(x85a ~ L(x85a, 1) + trend(x85a))
+summary(m1)
+```
+
+### Diagnostic Plots (Figure 16.3 / 16.4)
+
+```{r m1-diagnostics, fig.height=8}
+plot_diagnostics(m1, x85a, title = "Model 1: AR(1) + Trend")
+```
+
+### Formal Misspecification Tests
+
+```{r m1-tests}
+knitr::kable(run_diagnostics(m1, bg_order = 5),
+             caption = "Model 1 – Misspecification Tests")
+```
+
+**Key observations:**
+
+- $\hat{\beta}_1 \approx 0.919$ — very close to 1, suggesting a near-unit root.
+- $R^2 \approx 0.995$ — *spuriously* high due to the shared stochastic trend.
+- The Jarque–Bera test rejects normality (driven by three positive outliers:
+  1972 Q4, 1973 Q1, 1979 Q2).
+
+
+## Model 2: AR(1) + Trend + Outlier Dummy
+
+To address the normality problem, we add a dummy variable for the three outlier
+quarters:
+
+$$
+x_{85a,t} = \beta_0 + \beta_1\, x_{85a,t-1} + \beta_2\, D_t^{\text{outlier}} + \beta_3\, t + \varepsilon_t
+$$
+
+where $D_t^{\text{outlier}} = 1$ for $t \in \{1972\text{Q}4,\; 1973\text{Q}1,\; 1979\text{Q}2\}$.
+
+```{r outlier-dummy}
+# Create outlier dummy using explicit quarter matching
+target_quarters <- as.yearqtr(c("1972 Q4", "1973 Q1", "1979 Q2"))
+outliers        <- ts(numeric(length(x85a)), start = start(x85a), frequency = 4)
+ts_quarters     <- as.yearqtr(time(outliers))
+outliers[ts_quarters %in% target_quarters] <- 1
+```
+
+```{r model-2}
+m2 <- dynlm(x85a ~ L(x85a, 1) + outliers + trend(x85a))
+summary(m2)
+```
+
+```{r m2-diagnostics, fig.height=8}
+plot_diagnostics(m2, x85a, title = "Model 2: AR(1) + Trend + Outlier Dummy")
+```
+
+```{r m2-tests}
+knitr::kable(run_diagnostics(m2, bg_order = 5),
+             caption = "Model 2 – Misspecification Tests")
+```
+
+**Key observations:**
+
+- The normality issue is resolved by controlling for the outliers.
+- However, note the *still very high* $\hat{\beta}_1 \approx 0.897$ and $R^2 \approx 0.996$.
+- Residual autocorrelation is now a concern (check BG test at various lags).
+
+
+## Model 3: Re-parameterised in First Differences
+
+We subtract $x_{85a,t-1}$ from both sides:
+
+$$
+\Delta x_{85a,t} = \beta_0 + (\beta_1 - 1)\, x_{85a,t-1} + \beta_2\, D_t^{\text{outlier}} + \beta_3\, t + \varepsilon_t
+$$
+
+This is algebraically *identical* to Model 2 but the dependent variable is now
+$\Delta x_{85a,t}$, which is stationary. The coefficient on $x_{85a,t-1}$ becomes
+$\hat{\beta}_1 - 1 \approx -0.103$.
+
+```{r model-3}
+m3 <- dynlm(d(x85a, 1) ~ L(x85a, 1) + outliers + trend(x85a))
+summary(m3)
+```
+
+**Crucial insight:** The residuals, coefficients, and log-likelihood are
+*identical* to Model 2 (ML estimation is invariant to invertible parameter
+transformations). Yet $R^2$ drops from 0.996 to about 0.325 — revealing that the
+"excellent fit" in levels was an artefact of the shared stochastic trend, not
+genuine explanatory power.
+
+
+## Likelihood-Ratio Unit-Root Test (HN §16.3)
+
+To test the unit-root hypothesis we treat Model 3 as the **unrestricted** model
+and impose two restrictions:
+
+1. $\beta_1 - 1 = 0$  (i.e.\ $\beta_1 = 1$, a unit root in the levels model)
+2. $\beta_3 = 0$  (no deterministic trend)
+
+The **restricted** model is simply:
+
+$$
+\Delta x_{85a,t} = \beta_2\, D_t^{\text{outlier}} + \varepsilon_t
+$$
+
+```{r model-4}
+m4 <- dynlm(d(x85a, 1) ~ outliers)
+summary(m4)
+```
+
+```{r lr-test-uk}
+# Likelihood-ratio test
+lr_result <- lmtest::lrtest(m3, m4)
+lr_result
+```
+
+**Result:** The LR statistic must be compared to the **Dickey–Fuller** distribution
+(not the usual $\chi^2$), because the null hypothesis places us on the boundary
+of the parameter space. The 5 % critical value from the DF table for this joint
+test is approximately **12.4**. Since our test statistic falls below this threshold,
+we **cannot reject** the null of a unit root.
+
+
+# Testing for a Unit Root – Fulton Fish Market (HN §16.5.2)
+
+## Visual Inspection
+
+```{r fulton-plot}
+ts.plot(fulton$LogPrice, ylab = "Log Price", xlab = "",
+        main = "Log Price – Fulton Fish Market")
+abline(h = 0, lty = 2, col = "grey50")
+```
+
+The series fluctuates around zero with no obvious trend.
+A Spanos-window inspection does not suggest shifts in mean or variance.
+We therefore test for a unit root **without** a constant or trend.
+
+## Model 5: AR(1) in Levels with Weather Dummies
+
+$$
+\text{LogPrice}_t = \alpha + \phi\,\text{LogPrice}_{t-1} + \gamma_1\,\text{Stormy}_t + \gamma_2\,\text{Mixed}_t + u_t
+$$
+
+```{r model-5}
+m5 <- lm(LogPrice ~ lag.xts(LogPrice, 1) + Stormy + Mixed, data = fulton_xts)
+summary(m5)
+```
+
+
+## Model 6: Re-parameterised in First Differences
+
+Subtracting $\text{LogPrice}_{t-1}$ from both sides:
+
+$$
+\Delta\text{LogPrice}_t = \alpha + (\phi - 1)\,\text{LogPrice}_{t-1} + \gamma_1\,\text{Stormy}_t + \gamma_2\,\text{Mixed}_t + u_t
+$$
+
+```{r model-6}
+m6 <- lm(diff.xts(LogPrice, 1) ~ lag.xts(LogPrice, 1) + Stormy + Mixed,
+          data = fulton_xts)
+summary(m6)
+```
+
+**Note:** Residuals and log-likelihood are identical to Model 5; $R^2$ drops
+substantially, same lesson as before.
+
+
+## Model 7: Demeaned Weather Dummies
+
+Dummy variables that persist over time can mimic a deterministic trend.
+De-meaning removes this cumulative effect:
+
+$$
+\widetilde{D}_t = D_t - \bar{D}
+$$
+
+```{r model-7}
+# De-mean the weather dummies (excluding the first obs to match HN)
+fulton_xts$Mixed  <- fulton_xts$Mixed  - mean(fulton_xts$Mixed[-1])
+fulton_xts$Stormy <- fulton_xts$Stormy - mean(fulton_xts$Stormy[-1])
+
+m7 <- lm(diff.xts(LogPrice, 1) ~ lag.xts(LogPrice, 1) + Stormy + Mixed,
+          data = fulton_xts)
+summary(m7)
+```
+
+```{r loglik-compare}
+# Verify: log-likelihoods are identical
+cat("Log-Lik (Model 6):", logLik(m6), "\n")
+cat("Log-Lik (Model 7):", logLik(m7), "\n")
+```
+
+
+## Model 8: Restricted (Unit-Root Null)
+
+Under the unit-root hypothesis:
+
+- Remove `LogPrice_{t-1}` ($\phi - 1 = 0$)
+- Remove the intercept (to avoid confounding stochastic and deterministic trends)
+
+$$
+\Delta\text{LogPrice}_t = \gamma_1\,\widetilde{\text{Stormy}}_t + \gamma_2\,\widetilde{\text{Mixed}}_t + u_t
+$$
+
+```{r model-8}
+# Restricted model: no intercept, no lagged level
+m8 <- lm(diff.xts(LogPrice, 1) ~ 0 + Stormy + Mixed, data = fulton_xts)
+summary(m8)
+```
+
+```{r lr-test-fulton}
+# Likelihood-ratio test
+lr_fulton <- lmtest::lrtest(m8, m7)
+lr_fulton
+```
+
+**Result:** Comparing the LR statistic to the Dickey–Fuller $\chi^2$ critical value
+leads to **rejection** of the unit-root null — LogPrice appears stationary
+around a zero mean (see HN p. 251).
+
+
+## Automated ADF Test (for Comparison)
+
+The `fUnitRoots::adfTest()` function automates the Dickey–Fuller procedure.
+For comparability we specify zero augmentation lags and include a constant:
+
+$$
+\Delta y_t = \alpha + (\phi - 1)\,y_{t-1} + \varepsilon_t \qquad \text{(ADF with } p = 0 \text{)}
+$$
+
+$H_0$: $\phi = 1$ (unit root) vs. $H_1$: $|\phi| < 1$ (stationary).
+
+```{r adf-auto}
+adf <- fUnitRoots::adfTest(as.ts(fulton$LogPrice), lags = 0, type = "c")
+adf
+```
+
+```{r adf-regression}
+# Inspect the underlying regression
+summary(adf@test$lm)
+```
+
+**Note:** The automated test also rejects the unit root, consistent with our
+manual LR test. However, the automated specification is simpler — it does not
+include the Stormy and Mixed weather dummies. In applied work, always inspect
+the underlying regression to ensure the auxiliary regressors are appropriate.
+
+
+# Summary
+
+| Section | Key Takeaway |
+|:--------|:-------------|
+| §16.1 | Slowly decaying ACF + PACF spike at lag 1 = hallmark of non-stationarity |
+| §16.3 | High $R^2$ in levels regressions with non-stationary data is misleading |
+| §16.3 | Re-parameterising to $\Delta y_t$ reveals the true (low) explanatory power |
+| §16.5 | Unit-root LR tests use the **Dickey–Fuller** distribution, not $\chi^2$ |
+| §16.5 | Always check whether a constant/trend should be included in the test |
+| §16.5 | Automated ADF tests are convenient but inspect the underlying regression |
+
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
